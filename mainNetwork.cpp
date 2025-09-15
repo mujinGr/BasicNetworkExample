@@ -1,11 +1,41 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <sys/wait.h>
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
+
+static void handle_client(int cfd, int client_id) {
+	printf("Client %d connected!\n", client_id);
+
+	// Keep receiving messages from this client until they disconnect
+	while (1) {
+		char buf[1024];
+		memset(buf, 0, sizeof(buf)); // clear buffer
+
+		ssize_t bytes_received = recv(cfd, buf, sizeof(buf) - 1, 0);
+		if (bytes_received > 0) {
+			buf[bytes_received] = '\0'; // ensure null termination
+			printf("Client %d says: %s\n", client_id, buf);
+		}
+		else if (bytes_received == 0) {
+			printf("Client %d disconnected\n", client_id);
+			break; // client closed connection
+		}
+		else {
+			perror("recv error:");
+			break; // error occurred
+		}
+	}
+
+	close(cfd);
+	printf("Client %d connection closed\n", client_id);
+	exit(0); // exit child process
+}
 
 static void server() {
 	// create socket
@@ -45,6 +75,8 @@ static void server() {
 
 	printf("Server listening for connections...\n");
 
+	int client_counter = 0;
+
 	// accept connections in a loop
 	while (1) {
 		struct sockaddr_storage caddr;
@@ -57,30 +89,30 @@ static void server() {
 			continue; // try again
 		}
 
-		printf("Client connected!\n");
+		client_counter++;
 
-		// Keep receiving messages from this client until they disconnect
-		while (1) {
-			char buf[1024];
-			memset(buf, 0, sizeof(buf)); // clear buffer
+		// Fork a new process to handle this client
+		pid_t pid = fork();
 
-			ssize_t bytes_received = recv(cfd, buf, sizeof(buf) - 1, 0);
-			if (bytes_received > 0) {
-				buf[bytes_received] = '\0'; // ensure null termination
-				printf("client says: %s\n", buf);
-			}
-			else if (bytes_received == 0) {
-				printf("Client disconnected\n");
-				break; // client closed connection
-			}
-			else {
-				perror("recv error:");
-				break; // error occurred
+		if (pid == 0) {
+			// Child process - handle the client
+			close(fd); // child doesn't need the listening socket
+			handle_client(cfd, client_counter);
+		}
+		else if (pid > 0) {
+			// Parent process - continue accepting new connections
+			close(cfd); // parent doesn't need the client socket
+
+			// Clean up zombie processes (non-blocking)
+			while (waitpid(-1, NULL, WNOHANG) > 0) {
+				// keep cleaning up finished children
 			}
 		}
-
-		close(cfd);
-		printf("Connection closed\n\n");
+		else {
+			// Fork failed
+			perror("fork error:");
+			close(cfd);
+		}
 	}
 
 	close(fd);
